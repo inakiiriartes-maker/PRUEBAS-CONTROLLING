@@ -50,6 +50,15 @@
   .filterbar label{font-size:13px;font-weight:600;color:var(--navy)}
   .filterbar select{padding:7px 12px;border-radius:8px;border:1px solid var(--border);font-size:13px;background:#fff;color:#1c2433}
   .back-link{background:none;border:none;color:var(--blue);font-size:13px;cursor:pointer;text-decoration:underline;padding:0;margin-left:auto}
+  #chatLog{max-height:240px;overflow-y:auto;margin-bottom:10px;display:flex;flex-direction:column;gap:8px}
+  .chat-msg{padding:9px 13px;border-radius:10px;font-size:13px;max-width:88%;line-height:1.45}
+  .chat-msg.user{align-self:flex-end;background:var(--lt);color:var(--navy)}
+  .chat-msg.bot{align-self:flex-start;background:#f1f4fa;color:#1c2433;border:1px solid var(--border)}
+  #chatForm{display:flex;gap:8px}
+  #chatForm input{flex:1;padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px}
+  #chatForm button{background:var(--navy);color:#fff;border:none;padding:9px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer}
+  #chatForm button:hover{background:var(--blue)}
+  .chat-hint{margin-top:8px;font-size:11px;color:var(--grey)}
 </style>
 </head>
 <body>
@@ -79,6 +88,16 @@
     <option value="5">Junio</option>
   </select>
   <button class="back-link" id="btnVolver">&larr; Volver a portada</button>
+</section>
+
+<section class="card" id="chatCard" style="margin-bottom:24px">
+  <h2>Pregúntale al dashboard</h2>
+  <div id="chatLog"></div>
+  <form id="chatForm" autocomplete="off">
+    <input id="chatInput" type="text" placeholder="Ej: ¿cuánto gastamos en marzo?" autocomplete="off">
+    <button type="submit">Preguntar</button>
+  </form>
+  <div class="chat-hint">Ejemplos: "total de enero" &middot; "proveedor top" &middot; "gasto de Arval" &middot; "compara marzo con abril" &middot; "gasto BUN HQ" &middot; "cuántos proveedores hay"</div>
 </section>
 
 <section class="kpis" id="kpis"></section>
@@ -141,6 +160,70 @@ const valFor=(r,m)=>m===-1?rt(r):r[2+m];
 const mesTot=MESES.map((_,i)=>ROWS.reduce((a,r)=>a+r[2+i],0));
 const granTotal=mesTot.reduce((a,b)=>a+b,0);
 const numProvTotal=new Set(ROWS.map(r=>r[0]).filter(t=>t!=="(Sin tercero)"&&t!=="ACREEDOR GENERICO")).size;
+const bunMapAll={},provMapAll={};
+ROWS.forEach(r=>{
+ bunMapAll[r[1]]=(bunMapAll[r[1]]||0)+rt(r);
+ provMapAll[r[0]]=(provMapAll[r[0]]||0)+rt(r);
+});
+const provArrAll=Object.entries(provMapAll).filter(p=>p[1]!==0).sort((a,b)=>b[1]-a[1]);
+
+// ---- Asistente de preguntas (sin IA, por patrones sobre los datos ya cargados) ----
+const MES_ALIAS=[["enero","ene"],["febrero","feb"],["marzo","mar"],["abril","abr"],["mayo","may"],["junio","jun"]];
+const normalizar=s=>s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+const detectarMeses=qn=>MES_ALIAS.map((al,i)=>al.some(a=>qn.includes(a))?i:-1).filter(i=>i!==-1);
+const detectarProveedor=qn=>{
+ const nombres=[...new Set(ROWS.map(r=>r[0]))];
+ return nombres.find(nombre=>normalizar(nombre).split(/[^a-z0-9]+/).filter(w=>w.length>3).some(w=>qn.includes(w)))||null;
+};
+const detectarBun=qn=>{
+ const buns=[...new Set(ROWS.map(r=>r[1]))];
+ return buns.find(b=>qn.includes(normalizar(b)))||null;
+};
+
+function responderPregunta(preguntaOriginal){
+ const qn=normalizar(preguntaOriginal.trim());
+ if(!qn) return "Escribe una pregunta sobre el dashboard.";
+ if(/ayuda|ejemplos|que puedo preguntar|^hola\b/.test(qn))
+  return 'Puedes preguntarme, por ejemplo: "¿cuánto gastamos en marzo?", "¿quién es el proveedor top?", "gasto de Arval", "compara abril con mayo", "gasto BUN HQ", "cuántos proveedores hay" o "qué mes tuvo más gasto".';
+
+ if(/compar|diferencia|\bvs\b/.test(qn)){
+  const meses=detectarMeses(qn);
+  if(meses.length>=2){
+   const [a,b]=meses,va=mesTot[a],vb=mesTot[b],diff=vb-va;
+   return `${MESES_LARGO[a]}: ${fmt(va)} € · ${MESES_LARGO[b]}: ${fmt(vb)} €. Diferencia (${MESES_LARGO[b]} vs ${MESES_LARGO[a]}): ${diff>=0?'+':''}${fmt(diff)} €.`;
+  }
+ }
+
+ if(/mes.*(mas gast|mayor gast|mas caro)|(mas gast|mayor gast).*mes/.test(qn)){
+  const idx=mesTot.indexOf(Math.max(...mesTot));
+  return `El mes con más gasto es ${MESES_LARGO[idx]}, con ${fmt(mesTot[idx])} €.`;
+ }
+ if(/mes.*(menos gast|menor gast|mas barato)|(menos gast|menor gast).*mes/.test(qn)){
+  const idx=mesTot.indexOf(Math.min(...mesTot));
+  return `El mes con menos gasto es ${MESES_LARGO[idx]}, con ${fmt(mesTot[idx])} €.`;
+ }
+
+ const prov=detectarProveedor(qn);
+ if(prov) return `${prov}: ${fmt(provMapAll[prov]||0)} € en el periodo Ene-Jun.`;
+
+ const bun=detectarBun(qn);
+ if(bun) return `BUN ${bun}: ${fmt(bunMapAll[bun]||0)} € en el periodo Ene-Jun.`;
+
+ if(/top proveedor|proveedor top|mayor proveedor|principal proveedor|proveedor con mas/.test(qn))
+  return `El proveedor con mayor gasto es ${provArrAll[0][0]}, con ${fmt(provArrAll[0][1])} €.`;
+
+ if(/cuantos proveedor/.test(qn))
+  return `Hay ${numProvTotal} proveedores de renting distintos en el periodo.`;
+
+ const meses=detectarMeses(qn);
+ if(meses.length===1 && /gast|total|cuanto/.test(qn))
+  return `Gasto total en ${MESES_LARGO[meses[0]]}: ${fmt(mesTot[meses[0]])} €.`;
+
+ if(/total|gasto|cuanto/.test(qn))
+  return `Gasto total del periodo Ene-Jun: ${fmt(granTotal)} €. Media mensual: ${fmt(granTotal/6)} €.`;
+
+ return 'No he entendido bien la pregunta. Prueba con: "¿cuánto gastamos en marzo?", "¿quién es el proveedor top?", "gasto de Arval", "compara abril con mayo", "gasto BUN HQ" o "cuántos proveedores hay".';
+}
 
 function render(mIdx){
  const etiquetaPeriodo=mIdx===-1?"Ene-Jun":MESES_LARGO[mIdx];
@@ -258,6 +341,26 @@ document.getElementById('btnVolver').addEventListener('click',()=>{
  document.getElementById('dashboard').hidden=true;
  document.getElementById('portada').hidden=false;
 });
+
+function agregarMensajeChat(texto,tipo){
+ const log=document.getElementById('chatLog');
+ const div=document.createElement('div');
+ div.className='chat-msg '+tipo;
+ div.textContent=texto;
+ log.appendChild(div);
+ log.scrollTop=log.scrollHeight;
+}
+document.getElementById('chatForm').addEventListener('submit',e=>{
+ e.preventDefault();
+ const input=document.getElementById('chatInput');
+ const pregunta=input.value.trim();
+ if(!pregunta) return;
+ agregarMensajeChat(pregunta,'user');
+ agregarMensajeChat(responderPregunta(pregunta),'bot');
+ input.value='';
+ input.focus();
+});
+agregarMensajeChat('¡Hola! Pregúntame algo sobre este dashboard, por ejemplo: "¿cuánto gastamos en marzo?".','bot');
 
 render(-1);
 </script>
